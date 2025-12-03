@@ -1,0 +1,17 @@
+[Unit]
+Description=Plex Proxy Pi health check
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/usr/local/bin/plexproxy-health
+ConditionPathExists=/etc/plexproxy/config.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/plexproxy-health
+User=root
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target
