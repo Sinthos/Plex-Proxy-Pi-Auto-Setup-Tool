@@ -9,6 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_PREFIX="/usr/local/bin"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_DIR="/etc/plexproxy"
+SYSCTL_DIR="/etc/sysctl.d"
 
 usage() {
   cat <<'EOF'
@@ -43,9 +44,15 @@ install_all() {
 
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-setup.sh" "${INSTALL_PREFIX}/plexproxy-setup" 0755
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-health.sh" "${INSTALL_PREFIX}/plexproxy-health" 0755
+  copy_file "${SCRIPT_DIR}/scripts/plexproxy-wg-tune.sh" "${INSTALL_PREFIX}/plexproxy-wg-tune" 0755
+  copy_file "${SCRIPT_DIR}/scripts/plexproxy-sysctl-apply.sh" "${INSTALL_PREFIX}/plexproxy-sysctl-apply" 0755
 
   copy_file "${SCRIPT_DIR}/systemd/plexproxy-health.service" "${SYSTEMD_DIR}/plexproxy-health.service" 0644
   copy_file "${SCRIPT_DIR}/systemd/plexproxy-health.timer" "${SYSTEMD_DIR}/plexproxy-health.timer" 0644
+
+  if [[ -f "${SCRIPT_DIR}/config/90-plexproxy-tuning.conf" ]]; then
+    copy_file "${SCRIPT_DIR}/config/90-plexproxy-tuning.conf" "${CONFIG_DIR}/90-plexproxy-tuning.conf" 0644
+  fi
 
   systemctl daemon-reload
   echo "Install complete. Enable the health timer after setup with: systemctl enable --now plexproxy-health.timer"

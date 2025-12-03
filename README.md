@@ -14,6 +14,8 @@ Transforms a Raspberry Pi OS Lite (64-bit) install into a WireGuard-connected Pl
 - `install.sh` – installer/updater that copies scripts and systemd units into place (`/usr/local/bin`, `/etc/systemd/system`).
 - `scripts/plexproxy-setup.sh` – main guided setup (Wi‑Fi, WireGuard, Caddy, health timer).
 - `scripts/plexproxy-health.sh` – health/self-healing check used by the systemd timer.
+- `scripts/plexproxy-wg-tune.sh` – WireGuard diagnostics and MTU helper.
+- `scripts/plexproxy-sysctl-apply.sh` – applies safe TCP/BBR tuning.
 - `systemd/plexproxy-health.service` / `.timer` – run the health check every minute.
 
 ## Prerequisites
@@ -41,6 +43,10 @@ At the end you will see:
 - Pi LAN IP (use this on the Apple TV): `http://<PI_LAN_IP>:32400`
 - WireGuard IP for the Pi and the server-side peer snippet to add on your home WireGuard server.
 
+### Optional tuning (after setup)
+- MTU/diagnostics: `sudo plexproxy-wg-tune --detect` (logs to `/var/log/plexproxy-wg-diagnostics.log`); apply a value with `--apply <mtu>`.
+- Sysctl (safe TCP/BBR buffers): `sudo plexproxy-sysctl-apply`.
+
 ## Health check
 - Installed to `/usr/local/bin/plexproxy-health`.
 - Timer/service installed by `install.sh`; enabled automatically by `plexproxy-setup` if present.
@@ -56,6 +62,7 @@ At the end you will see:
 - Wi‑Fi: `/etc/wpa_supplicant/wpa_supplicant.conf`
 - WireGuard: `/etc/wireguard/wg0.conf`, keys in `/etc/wireguard/privatekey` and `publickey`
 - Caddyfile: `/etc/caddy/Caddyfile`
+- Sysctl tuning: `/etc/sysctl.d/90-plexproxy-tuning.conf`
 - Logs: `/var/log/plexproxy-setup.log`, `/var/log/plexproxy-health.log`
 
 ## Notes on SD card wear

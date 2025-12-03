@@ -8,10 +8,13 @@ set -euo pipefail
 LOG_FILE="/var/log/plexproxy-health.log"
 CONFIG_FILE="/etc/plexproxy/config.env"
 WG_IFACE="wg0"
-HANDSHAKE_MAX_AGE=300 # seconds
-SUCCESS_LOG_INTERVAL=3600 # seconds
+HANDSHAKE_MAX_AGE=300   # seconds
+SUCCESS_LOG_INTERVAL=3600
+MIN_RESTART_INTERVAL=30 # seconds between restarts to avoid flapping
 STATE_DIR="/var/run/plexproxy"
 LAST_SUCCESS_FILE="${STATE_DIR}/health.last"
+LAST_RESTART_FILE="${STATE_DIR}/health.last_restart"
+LOCK_FILE="${STATE_DIR}/health.lock"
 
 mkdir -p "${STATE_DIR}"
 
@@ -22,7 +25,7 @@ log() {
 }
 
 log_success_throttled() {
-  local now epoch last=0
+  local now last=0
   now=$(date +%s)
   if [[ -f "${LAST_SUCCESS_FILE}" ]]; then
     last=$(cat "${LAST_SUCCESS_FILE}")
@@ -64,12 +67,47 @@ check_http() {
   curl -fsS --max-time 5 http://localhost:32400/identity >/dev/null 2>&1
 }
 
+can_restart() {
+  local now last=0
+  now=$(date +%s)
+  if [[ -f "${LAST_RESTART_FILE}" ]]; then
+    last=$(cat "${LAST_RESTART_FILE}")
+  fi
+  (( now - last >= MIN_RESTART_INTERVAL ))
+}
+
+mark_restart() {
+  date +%s > "${LAST_RESTART_FILE}"
+}
+
 restart_wireguard() {
+  if ! can_restart; then
+    log "INFO" "Skipping WireGuard restart to avoid flapping."
+    return
+  fi
+  log "INFO" "Restarting WireGuard (${WG_IFACE})."
   wg-quick down "${WG_IFACE}" >/dev/null 2>&1 || true
   wg-quick up "${WG_IFACE}"
+  mark_restart
+}
+
+restart_caddy() {
+  if ! can_restart; then
+    log "INFO" "Skipping Caddy restart to avoid flapping."
+    return
+  fi
+  log "INFO" "Restarting Caddy."
+  systemctl restart caddy
+  mark_restart
 }
 
 main() {
+  exec {LOCKFD}>"${LOCK_FILE}"
+  if ! flock -n "${LOCKFD}"; then
+    log "INFO" "Another health check is running; exiting."
+    exit 0
+  fi
+
   require_config
   local failed=0
 
@@ -90,7 +128,7 @@ main() {
 
   if ! check_http; then
     log "WARN" "HTTP check to localhost:32400 failed; restarting Caddy."
-    systemctl restart caddy || failed=1
+    restart_caddy || failed=1
   fi
 
   if (( failed == 0 )); then

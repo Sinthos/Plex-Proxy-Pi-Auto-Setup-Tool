@@ -356,9 +356,30 @@ configure_caddy() {
   say ""
   say "=== Configuring Caddy reverse proxy ==="
   backup_file "${CADDYFILE}"
+  mkdir -p /var/log/caddy
   cat > "${CADDYFILE}" <<EOF
 :32400 {
-    reverse_proxy ${PLEX_IP}:32400
+    # Keep upstream connections warm and allow mild buffering to ride out jitter
+    reverse_proxy ${PLEX_IP}:32400 {
+        flush_interval 250ms
+        transport http {
+            versions h1 h2c
+            keepalive 30
+            keepalive_idle_conns 16
+            keepalive_timeout 300s
+            read_buffer 32kb
+            write_buffer 32kb
+            dial_timeout 10s
+            response_header_timeout 20s
+        }
+    }
+
+    log {
+        output file /var/log/caddy/plexproxy-access.log {
+            roll_size 10MiB
+            roll_keep 5
+        }
+    }
 }
 EOF
   systemctl enable caddy
@@ -368,6 +389,35 @@ EOF
   else
     say "WARNING: Caddy reverse proxy test failed. Verify Plex is reachable through the tunnel."
   fi
+}
+
+apply_sysctl_tuning() {
+  say ""
+  say "=== Optional: apply safe network sysctl tuning ==="
+  if ! confirm "Apply Plex Proxy Pi sysctl tuning now? (enables BBR, larger TCP buffers)"; then
+    say "Skipping sysctl tuning."
+    return
+  fi
+
+  if command -v plexproxy-sysctl-apply >/dev/null 2>&1; then
+    plexproxy-sysctl-apply
+    return
+  fi
+
+  # Fallback inline template if helper is unavailable
+  cat > /etc/sysctl.d/90-plexproxy-tuning.conf <<'EOF'
+# Safe network tuning for Plex Proxy Pi
+# These values favor stable streaming over absolute throughput.
+net.core.rmem_max = 2621440
+net.core.wmem_max = 2621440
+net.ipv4.tcp_rmem = 4096 87380 2097152
+net.ipv4.tcp_wmem = 4096 65536 2097152
+net.core.netdev_max_backlog = 5000
+net.ipv4.tcp_max_syn_backlog = 2048
+net.ipv4.tcp_congestion_control = bbr
+EOF
+  sysctl --system >/dev/null
+  sysctl net.ipv4.tcp_congestion_control
 }
 
 enable_health_timer() {
@@ -418,6 +468,7 @@ main() {
   bring_up_wireguard
   test_connectivity
   configure_caddy
+  apply_sysctl_tuning
   enable_health_timer
   final_summary
 }
