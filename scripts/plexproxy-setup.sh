@@ -19,6 +19,7 @@ WPA_CONF="/etc/wpa_supplicant/wpa_supplicant.conf"
 CADDYFILE="/etc/caddy/Caddyfile"
 HEALTH_TIMER="plexproxy-health.timer"
 HEALTH_SERVICE="plexproxy-health.service"
+USE_WIFI="yes"
 
 mkdir -p "$(dirname "${LOG_FILE}")"
 touch "${LOG_FILE}"
@@ -75,6 +76,18 @@ confirm() {
   local prompt="${1:-Proceed?}"
   read -r -p "${prompt} [y/N]: " reply
   [[ "${reply}" =~ ^[Yy]$ ]]
+}
+
+detect_lan_ip() {
+  local ip
+  ip=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+  if [[ -z "${ip}" ]]; then
+    ip=$(ip -4 addr show wlan0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
+  fi
+  if [[ -z "${ip}" ]]; then
+    ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  fi
+  echo "${ip}"
 }
 
 load_existing_config() {
@@ -144,17 +157,27 @@ collect_config() {
   PI_WG_IP="${PI_WG_IP:-192.168.200.6}"
   PLEX_IP="${PLEX_IP:-}"
   FILES_IP="${FILES_IP:-}"
+  USE_WIFI="${USE_WIFI:-yes}"
 
-  COUNTRY_CODE=$(read_default "Country code" "${COUNTRY_CODE}")
-  WIFI_SSID=$(read_default "Wi-Fi SSID" "${WIFI_SSID:-""}")
-  while [[ -z "${WIFI_SSID}" ]]; do
-    WIFI_SSID=$(read_default "Wi-Fi SSID (required)" "")
-  done
-  WIFI_PSK_INPUT=$(read_secret "Wi-Fi password (input hidden)")
-  WIFI_PSK="${WIFI_PSK_INPUT:-${WIFI_PSK}}"
-  while [[ -z "${WIFI_PSK}" ]]; do
-    WIFI_PSK=$(read_secret "Wi-Fi password is required, re-enter")
-  done
+  USE_WIFI=$(read_default "Use Wi-Fi for connectivity? (yes/no)" "${USE_WIFI}")
+  if [[ "${USE_WIFI}" =~ ^([Nn]|no)$ ]]; then
+    USE_WIFI="no"
+  else
+    USE_WIFI="yes"
+  fi
+
+  if [[ "${USE_WIFI}" == "yes" ]]; then
+    COUNTRY_CODE=$(read_default "Country code" "${COUNTRY_CODE}")
+    WIFI_SSID=$(read_default "Wi-Fi SSID" "${WIFI_SSID:-""}")
+    while [[ -z "${WIFI_SSID}" ]]; do
+      WIFI_SSID=$(read_default "Wi-Fi SSID (required)" "")
+    done
+    WIFI_PSK_INPUT=$(read_secret "Wi-Fi password (input hidden)")
+    WIFI_PSK="${WIFI_PSK_INPUT:-${WIFI_PSK}}"
+    while [[ -z "${WIFI_PSK}" ]]; do
+      WIFI_PSK=$(read_secret "Wi-Fi password is required, re-enter")
+    done
+  fi
 
   WG_ENDPOINT=$(read_default "WireGuard server endpoint (host:port)" "${WG_ENDPOINT}")
   SERVER_PUBLIC_KEY=$(read_default "WireGuard server public key" "${SERVER_PUBLIC_KEY}")
@@ -180,6 +203,7 @@ Pi WG IP:           ${PI_WG_IP}
 Allowed IPs:        ${WG_ALLOWED_IPS}
 Plex server IP:     ${PLEX_IP}
 File/NAS IP:        ${FILES_IP:-<none>}
+Use Wi-Fi:          ${USE_WIFI}
 EOF
 
   if ! confirm "Proceed with these settings?"; then
@@ -202,12 +226,19 @@ PI_WG_IP="${PI_WG_IP}"
 PLEX_IP="${PLEX_IP}"
 FILES_IP="${FILES_IP}"
 WG_ALLOWED_IPS="${WG_ALLOWED_IPS}"
+USE_WIFI="${USE_WIFI}"
 EOF
   chmod 600 "${CONFIG_FILE}"
   say "Saved config to ${CONFIG_FILE}"
 }
 
 configure_wifi() {
+  if [[ "${USE_WIFI}" != "yes" ]]; then
+    say "Skipping Wi-Fi configuration (wired mode selected)."
+    PI_LAN_IP=$(detect_lan_ip)
+    return
+  fi
+
   say ""
   say "=== Configuring Wi-Fi ==="
   backup_file "${WPA_CONF}"
@@ -228,10 +259,7 @@ EOF
     systemctl restart wpa_supplicant || true
   fi
   sleep 3
-  PI_LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-  if [[ -z "${PI_LAN_IP}" ]]; then
-    PI_LAN_IP=$(ip -4 addr show wlan0 | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
-  fi
+  PI_LAN_IP=$(detect_lan_ip)
   say "Detected Pi LAN IP: ${PI_LAN_IP:-unknown}"
 }
 
@@ -245,7 +273,7 @@ update_system() {
 install_packages() {
   say ""
   say "=== Installing dependencies ==="
-  DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard caddy curl jq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard caddy curl jq watchdog
 }
 
 ensure_wireguard_keys() {
@@ -420,6 +448,38 @@ EOF
   sysctl net.ipv4.tcp_congestion_control
 }
 
+configure_watchdog() {
+  say ""
+  say "=== Configuring hardware watchdog ==="
+
+  # Ensure driver loads on boot (Pi hardware watchdog)
+  install -m 0644 -D /dev/null /etc/modules-load.d/plexproxy-watchdog.conf
+  if ! grep -q "^bcm2835_wdt" /etc/modules-load.d/plexproxy-watchdog.conf; then
+    echo "bcm2835_wdt" >> /etc/modules-load.d/plexproxy-watchdog.conf
+  fi
+
+  modprobe bcm2835_wdt || true
+
+  local watchdog_conf="/etc/watchdog.conf"
+  backup_file "${watchdog_conf}"
+  cat > "${watchdog_conf}" <<'EOF'
+# Plex Proxy Pi watchdog configuration
+watchdog-device = /dev/watchdog
+watchdog-timeout = 15
+interval = 5
+max-load-1 = 24
+# Network reachability tests (any success is enough)
+ping = 1.1.1.1
+ping = 8.8.8.8
+# Interface checks; adjust depending on deployment
+interface = eth0
+interface = wlan0
+EOF
+
+  systemctl enable --now watchdog
+  say "Hardware watchdog enabled (auto-reboot if system hangs or loses network for prolonged period)."
+}
+
 enable_health_timer() {
   say ""
   say "=== Enabling health check timer ==="
@@ -432,6 +492,9 @@ enable_health_timer() {
 }
 
 final_summary() {
+  if [[ -z "${PI_LAN_IP:-}" ]]; then
+    PI_LAN_IP=$(detect_lan_ip)
+  fi
   say ""
   say "=== Setup complete ==="
   say "LAN IP: ${PI_LAN_IP:-unknown}"
@@ -462,6 +525,7 @@ main() {
   update_system
   install_packages
   configure_wifi
+  configure_watchdog
   ensure_wireguard_keys
   write_wg_conf
   print_server_snippet

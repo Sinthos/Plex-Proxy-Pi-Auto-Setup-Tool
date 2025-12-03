@@ -4,11 +4,13 @@ Transforms a Raspberry Pi OS Lite (64-bit) install into a WireGuard-connected Pl
 
 ## What this does
 - Configures Wi‑Fi and saves credentials on the Pi.
+- Supports wired LAN-only deployments (Wi‑Fi optional).
 - Installs/updates `wireguard`, `caddy`, `curl`, `jq`.
 - Generates WireGuard keys (or imports an existing `wg0.conf`), builds `/etc/wireguard/wg0.conf`, enables `wg-quick@wg0`, and verifies connectivity.
 - Writes a minimal Caddy reverse proxy on port `32400` that forwards to your home Plex server via WireGuard.
 - Adds a self-healing health check (systemd timer) that restarts WireGuard/Caddy if connectivity or proxy checks fail. Logs are written only on failure or once per hour to reduce SD wear.
 - Produces a server-side WireGuard snippet for you to add to your home server.
+- Enables the Pi hardware watchdog for auto-reboot on hangs/loss of network.
 
 ## Repository layout
 - `install.sh` – installer/updater that copies scripts and systemd units into place (`/usr/local/bin`, `/etc/systemd/system`).
@@ -63,6 +65,7 @@ At the end you will see:
 - WireGuard: `/etc/wireguard/wg0.conf`, keys in `/etc/wireguard/privatekey` and `publickey`
 - Caddyfile: `/etc/caddy/Caddyfile`
 - Sysctl tuning: `/etc/sysctl.d/90-plexproxy-tuning.conf`
+- Watchdog: `/etc/watchdog.conf`, module load at `/etc/modules-load.d/plexproxy-watchdog.conf`
 - Logs: `/var/log/plexproxy-setup.log`, `/var/log/plexproxy-health.log`
 
 ## Notes on SD card wear
