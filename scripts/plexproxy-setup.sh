@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 LOG_FILE="/var/log/plexproxy-setup.log"
 CONFIG_DIR="/etc/plexproxy"
 CONFIG_FILE="${CONFIG_DIR}/config.env"
@@ -21,14 +21,107 @@ HEALTH_TIMER="plexproxy-health.timer"
 HEALTH_SERVICE="plexproxy-health.service"
 USE_WIFI="yes"
 
+# Total number of setup steps for progress tracking
+TOTAL_STEPS=12
+CURRENT_STEP=0
+
 mkdir -p "$(dirname "${LOG_FILE}")"
 touch "${LOG_FILE}"
 chmod 600 "${LOG_FILE}" || true
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-trap 'echo "[!] Error on line ${LINENO}. Check the log: ${LOG_FILE}"' ERR
+# ANSI color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
 
+# Check if terminal supports colors
+if [[ -t 1 ]] && [[ -n "${TERM:-}" ]] && command -v tput &>/dev/null; then
+  COLORS_SUPPORTED=true
+else
+  COLORS_SUPPORTED=false
+  RED='' GREEN='' YELLOW='' BLUE='' MAGENTA='' CYAN='' WHITE='' BOLD='' DIM='' NC=''
+fi
+
+trap 'echo -e "${RED}[!] Error on line ${LINENO}. Check the log: ${LOG_FILE}${NC}"' ERR
+
+# Output functions with colors
 say() { echo -e "$*"; }
+info() { echo -e "${BLUE}ℹ${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*"; }
+header() { echo -e "\n${BOLD}${CYAN}$*${NC}"; }
+dim() { echo -e "${DIM}$*${NC}"; }
+
+# Progress indicator
+step() {
+  ((CURRENT_STEP++))
+  local pct=$((CURRENT_STEP * 100 / TOTAL_STEPS))
+  local bar_width=30
+  local filled=$((pct * bar_width / 100))
+  local empty=$((bar_width - filled))
+  local bar="${GREEN}"
+  for ((i=0; i<filled; i++)); do bar+="█"; done
+  bar+="${DIM}"
+  for ((i=0; i<empty; i++)); do bar+="░"; done
+  bar+="${NC}"
+  
+  echo ""
+  echo -e "${BOLD}[${CURRENT_STEP}/${TOTAL_STEPS}]${NC} ${WHITE}$*${NC}"
+  echo -e "  ${bar} ${pct}%"
+  echo ""
+}
+
+# Spinner for long-running operations
+spinner() {
+  local pid=$1
+  local msg="${2:-Working...}"
+  local spin='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  local i=0
+  
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r${CYAN}${spin:i++%${#spin}:1}${NC} ${msg}"
+    sleep 0.1
+  done
+  printf "\r"
+}
+
+# Print ASCII banner
+print_banner() {
+  echo -e "${CYAN}"
+  cat << 'BANNER'
+  ____  _           ____                        ____  _ 
+ |  _ \| | _____  _|  _ \ _ __ _____  ___   _  |  _ \(_)
+ | |_) | |/ _ \ \/ / |_) | '__/ _ \ \/ / | | | | |_) | |
+ |  __/| |  __/>  <|  __/| | | (_) >  <| |_| | |  __/| |
+ |_|   |_|\___/_/\_\_|   |_|  \___/_/\_\\__, | |_|   |_|
+                                        |___/           
+BANNER
+  echo -e "${NC}"
+  echo -e "${DIM}  Automated Plex Reverse Proxy Gateway${NC}"
+  echo -e "${DIM}  Version ${VERSION}${NC}"
+  echo ""
+}
+
+# Print a nice box around text
+print_box() {
+  local text="$1"
+  local width=$((${#text} + 4))
+  local border=""
+  for ((i=0; i<width; i++)); do border+="─"; done
+  
+  echo -e "${CYAN}┌${border}┐${NC}"
+  echo -e "${CYAN}│${NC}  ${text}  ${CYAN}│${NC}"
+  echo -e "${CYAN}└${border}┘${NC}"
+}
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -413,7 +506,7 @@ update_system() {
 install_packages() {
   say ""
   say "=== Installing dependencies ==="
-  DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard caddy curl jq watchdog
+  DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard caddy curl jq watchdog avahi-daemon python3
 }
 
 ensure_wireguard_keys() {
@@ -459,19 +552,53 @@ write_wg_conf() {
   say ""
   say "=== Writing WireGuard configuration ==="
   backup_file "${WG_CONF}"
+  
+  # Create a warmup script that runs after WireGuard comes up
+  # This ensures the tunnel is immediately "warm" after boot/restart
+  local warmup_script="/usr/local/bin/plexproxy-wg-warmup"
+  cat > "${warmup_script}" <<'WARMUP'
+#!/usr/bin/env bash
+# WireGuard warmup script - runs after wg0 comes up to ensure tunnel is immediately active
+# This prevents the need to manually run curl to "wake up" the tunnel
+
+sleep 2  # Brief delay to ensure interface is fully ready
+
+CONFIG_FILE="/etc/plexproxy/config.env"
+WG_IFACE="wg0"
+
+if [[ -f "${CONFIG_FILE}" ]]; then
+  source "${CONFIG_FILE}"
+  
+  # Ping the WireGuard server to initiate handshake
+  if [[ -n "${WG_SERVER_WG_IP:-}" ]]; then
+    ping -I "${WG_IFACE}" -c 3 -W 2 "${WG_SERVER_WG_IP}" >/dev/null 2>&1 || true
+  fi
+  
+  # Make HTTP request to Plex to warm up the full path
+  if [[ -n "${PLEX_IP:-}" ]]; then
+    curl -fsS --interface "${WG_IFACE}" --max-time 10 --connect-timeout 5 \
+         -o /dev/null "http://${PLEX_IP}:32400/identity" 2>/dev/null || true
+  fi
+fi
+WARMUP
+  chmod 755 "${warmup_script}"
+  
   cat > "${WG_CONF}" <<EOF
 [Interface]
 Address = ${PI_WG_IP}/32
 PrivateKey = $(cat "${WG_PRIVATE_KEY_FILE}")
 MTU = 1420
+# Warmup script ensures tunnel is immediately active after start
+PostUp = ${warmup_script} &
 
 [Peer]
 PublicKey = ${SERVER_PUBLIC_KEY}
 Endpoint = ${WG_ENDPOINT}
 AllowedIPs = ${WG_ALLOWED_IPS}
-PersistentKeepalive = 25
+PersistentKeepalive = 15
 EOF
   chmod 600 "${WG_CONF}"
+  say "WireGuard config written with automatic warmup on start"
 }
 
 print_server_snippet() {
@@ -539,7 +666,7 @@ configure_caddy() {
     health_checks {
       active {
         path /identity
-        interval 30s
+        interval 15s
         timeout 5s
       }
       passive {
@@ -645,59 +772,215 @@ EOF
 
 enable_health_timer() {
   say ""
-  say "=== Enabling health check timer ==="
+  say "=== Enabling health check, keepalive, and discovery services ==="
   systemctl daemon-reload
+  
+  # Enable the main health check timer (runs every minute)
   if systemctl list-unit-files | grep -q "^${HEALTH_TIMER}"; then
     systemctl enable --now "${HEALTH_TIMER}"
     say "Health check enabled (runs every minute)"
   else
     say "Health timer unit not found. Ensure install.sh has been run."
   fi
+  
+  # Enable the keepalive timer (runs every 15 seconds to keep tunnel warm)
+  local keepalive_timer="plexproxy-keepalive.timer"
+  if systemctl list-unit-files | grep -q "^${keepalive_timer}"; then
+    systemctl enable --now "${keepalive_timer}"
+    say "Keepalive timer enabled (runs every 15 seconds to prevent tunnel timeouts)"
+  else
+    say "Keepalive timer unit not found. Ensure install.sh has been run."
+  fi
+  
+  # Enable the GDM Discovery Relay (allows Plex clients to auto-discover the proxy)
+  local gdm_relay_service="plexproxy-gdm-relay.service"
+  if systemctl list-unit-files | grep -q "^${gdm_relay_service}"; then
+    systemctl enable --now "${gdm_relay_service}"
+    say "GDM Discovery Relay enabled (Plex clients can now auto-discover the proxy)"
+  else
+    say "GDM Relay service not found. Ensure install.sh has been run."
+  fi
+  
+  # Configure Avahi/mDNS for additional discovery
+  configure_avahi_discovery
+}
+
+configure_avahi_discovery() {
+  say ""
+  say "=== Configuring Avahi/mDNS discovery ==="
+  
+  # Install Avahi service file for Plex discovery
+  local avahi_services_dir="/etc/avahi/services"
+  local avahi_service_file="${avahi_services_dir}/plexproxy.service"
+  local avahi_template="${CONFIG_DIR}/plexproxy-avahi.service"
+  
+  mkdir -p "${avahi_services_dir}"
+  
+  if [[ -f "${avahi_template}" ]]; then
+    cp "${avahi_template}" "${avahi_service_file}"
+    say "Avahi service file installed to ${avahi_service_file}"
+  else
+    # Create inline if template not available
+    cat > "${avahi_service_file}" <<'AVAHI'
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">Plex Media Server on %h</name>
+  <service>
+    <type>_plex._tcp</type>
+    <port>32400</port>
+    <txt-record>PlexProxy=true</txt-record>
+  </service>
+</service-group>
+AVAHI
+    say "Avahi service file created at ${avahi_service_file}"
+  fi
+  
+  # Enable and restart Avahi
+  systemctl enable avahi-daemon
+  systemctl restart avahi-daemon
+  say "Avahi daemon enabled for mDNS/Bonjour discovery"
 }
 
 final_summary() {
   if [[ -z "${PI_LAN_IP:-}" ]]; then
     PI_LAN_IP=$(detect_lan_ip)
   fi
-  say ""
-  say "=== Setup complete ==="
-  say "LAN IP: ${PI_LAN_IP:-unknown}"
-  say "WireGuard IP: ${PI_WG_IP}"
-  say "Plex target: ${PLEX_IP}:32400"
-  say ""
-  cat <<EOF
-On your Apple TV Plex app:
-  Settings -> Servers -> Add server manually
-  Enter: http://${PI_LAN_IP:-<pi-ip>}:32400
-
-ASCII diagram:
-  Apple TV -- Wi-Fi --> Raspberry Pi -- WireGuard --> Home Network -- Plex Server
-EOF
-  say ""
-  say "Reminder: the Pi public key must be added to your WireGuard server:"
-  say "  ${PI_PUBLIC_KEY}"
-  say ""
-  say "Log file: ${LOG_FILE}"
+  
+  echo ""
+  echo -e "${GREEN}"
+  cat << 'SUCCESS'
+   _____ _    _  _____ _____ ______  _____ _____ _ 
+  / ____| |  | |/ ____/ ____|  ____|/ ____/ ____| |
+ | (___ | |  | | |   | |    | |__  | (___| (___ | |
+  \___ \| |  | | |   | |    |  __|  \___ \\___ \| |
+  ____) | |__| | |___| |____| |____ ____) |___) |_|
+ |_____/ \____/ \_____\_____|______|_____/_____/(_)
+SUCCESS
+  echo -e "${NC}"
+  
+  echo ""
+  print_box "Setup Complete!"
+  echo ""
+  
+  # Status summary
+  header "📊 Configuration Summary"
+  echo ""
+  echo -e "  ${CYAN}Network${NC}"
+  echo -e "    LAN IP:        ${GREEN}${PI_LAN_IP:-unknown}${NC}"
+  echo -e "    WireGuard IP:  ${GREEN}${PI_WG_IP}${NC}"
+  echo ""
+  echo -e "  ${CYAN}Plex${NC}"
+  echo -e "    Target Server: ${GREEN}${PLEX_IP}:32400${NC}"
+  echo -e "    Proxy URL:     ${GREEN}http://${PI_LAN_IP:-<pi-ip>}:32400${NC}"
+  echo ""
+  
+  # Services status
+  header "🔧 Active Services"
+  echo ""
+  echo -e "  ${GREEN}✓${NC} WireGuard VPN Tunnel"
+  echo -e "  ${GREEN}✓${NC} Caddy Reverse Proxy"
+  echo -e "  ${GREEN}✓${NC} Health Check (every 60s)"
+  echo -e "  ${GREEN}✓${NC} Keepalive (every 15s)"
+  echo -e "  ${GREEN}✓${NC} GDM Discovery Relay"
+  echo -e "  ${GREEN}✓${NC} Avahi/mDNS Discovery"
+  echo -e "  ${GREEN}✓${NC} Hardware Watchdog"
+  echo ""
+  
+  # Client instructions
+  header "📱 Connect Your Devices"
+  echo ""
+  echo -e "  ${BOLD}Automatic Discovery:${NC}"
+  echo -e "    Plex clients should automatically find the server."
+  echo -e "    Just open the Plex app and look for '${CYAN}Plex Media Server on $(hostname)${NC}'"
+  echo ""
+  echo -e "  ${BOLD}Manual Connection (if needed):${NC}"
+  echo -e "    URL: ${CYAN}http://${PI_LAN_IP:-<pi-ip>}:32400${NC}"
+  echo ""
+  
+  # Server config reminder
+  header "🔑 WireGuard Server Configuration"
+  echo ""
+  echo -e "  ${YELLOW}Add this peer to your home WireGuard server:${NC}"
+  echo ""
+  echo -e "  ${DIM}[Peer]${NC}"
+  echo -e "  ${DIM}# Raspberry Pi Plex Proxy${NC}"
+  echo -e "  ${DIM}PublicKey = ${NC}${GREEN}${PI_PUBLIC_KEY}${NC}"
+  echo -e "  ${DIM}AllowedIPs = ${PI_WG_IP}/32${NC}"
+  echo ""
+  
+  # Architecture diagram
+  header "🌐 Network Architecture"
+  echo ""
+  echo -e "${CYAN}"
+  cat << 'DIAGRAM'
+  ┌─────────────┐     Wi-Fi      ┌──────────────┐    WireGuard    ┌─────────────┐
+  │  Apple TV   │ ──────────────▶│ Raspberry Pi │ ───────────────▶│ Home Server │
+  │  iOS/PC     │   LAN :32400   │   (Proxy)    │    UDP Tunnel   │   (Plex)    │
+  └─────────────┘                └──────────────┘                 └─────────────┘
+                                       │
+                                       │ Auto-Discovery
+                                       │ Keepalive
+                                       │ Health Checks
+                                       ▼
+                                 Always Connected
+DIAGRAM
+  echo -e "${NC}"
+  
+  # Log file info
+  echo ""
+  dim "Log file: ${LOG_FILE}"
+  echo ""
+  
+  # Final message
+  echo -e "${GREEN}${BOLD}🎉 Your Plex Proxy Pi is ready!${NC}"
+  echo ""
 }
 
 main() {
-  say "Plex Proxy Pi setup v${VERSION}"
+  clear
+  print_banner
   require_root
   check_os
+  
+  step "Collecting Configuration"
   collect_config
   write_config_file
+  
+  step "Updating System Packages"
   update_system
+  
+  step "Installing Dependencies"
   install_packages
+  
+  step "Configuring Network"
   configure_wifi
+  
+  step "Setting Up WireGuard Keys"
   ensure_wireguard_keys
+  
+  step "Writing WireGuard Configuration"
   write_wg_conf
   print_server_snippet
+  
+  step "Starting WireGuard Tunnel"
   bring_up_wireguard
+  
+  step "Testing Connectivity"
   test_connectivity
+  
+  step "Configuring Caddy Reverse Proxy"
   configure_caddy
+  
+  step "Applying Network Tuning"
   apply_sysctl_tuning
+  
+  step "Enabling Background Services"
   enable_health_timer
+  
+  step "Configuring Hardware Watchdog"
   configure_watchdog
+  
   final_summary
 }
 

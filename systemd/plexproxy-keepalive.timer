@@ -1,0 +1,18 @@
+[Unit]
+Description=Run Plex Proxy Pi WireGuard keepalive every 15 seconds
+Documentation=https://github.com/Sinthos/Plex-Proxy-Pi-Auto-Setup-Tool
+
+[Timer]
+# Start 10 seconds after boot to allow WireGuard to come up
+OnBootSec=10sec
+# Run every 15 seconds to keep the tunnel warm
+# This prevents NAT/conntrack timeouts from breaking connectivity
+OnUnitActiveSec=15sec
+Unit=plexproxy-keepalive.service
+# Don't try to catch up on missed runs
+Persistent=false
+# Randomize slightly to avoid thundering herd
+RandomizedDelaySec=2sec
+
+[Install]
+WantedBy=timers.target

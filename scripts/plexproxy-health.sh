@@ -2,13 +2,16 @@
 #
 # Health check and self-healing for Plex Proxy Pi
 # Intended to run via systemd timer every minute.
+#
+# This script performs comprehensive health checks and automatically
+# restarts services when issues are detected.
 
 set -euo pipefail
 
 LOG_FILE="/var/log/plexproxy-health.log"
 CONFIG_FILE="/etc/plexproxy/config.env"
 WG_IFACE="wg0"
-HANDSHAKE_MAX_AGE=300   # seconds
+HANDSHAKE_MAX_AGE=180   # seconds (reduced from 300 for faster detection)
 SUCCESS_LOG_INTERVAL=3600
 MIN_RESTART_INTERVAL=30 # seconds between restarts to avoid flapping
 STATE_DIR="/var/run/plexproxy"
@@ -107,6 +110,40 @@ restart_caddy() {
   mark_restart
 }
 
+# Check if WireGuard routes are properly configured
+check_wg_routes() {
+  local target="${PLEX_IP:-}"
+  if [[ -z "${target}" ]]; then
+    return 0
+  fi
+  
+  # Check if route to PLEX_IP goes through wg0
+  local route_dev
+  route_dev=$(ip route get "${target}" 2>/dev/null | grep -oP 'dev \K\S+' | head -1)
+  
+  if [[ "${route_dev}" != "${WG_IFACE}" ]]; then
+    log "WARN" "Route to ${target} goes through ${route_dev:-unknown} instead of ${WG_IFACE}"
+    return 1
+  fi
+  return 0
+}
+
+# Check if WireGuard interface is up
+check_wg_interface() {
+  if ! ip link show "${WG_IFACE}" >/dev/null 2>&1; then
+    log "WARN" "WireGuard interface ${WG_IFACE} is not present"
+    return 1
+  fi
+  
+  local state
+  state=$(ip link show "${WG_IFACE}" 2>/dev/null | grep -oP 'state \K\S+' || echo "UNKNOWN")
+  if [[ "${state}" != "UNKNOWN" && "${state}" != "UP" ]]; then
+    log "WARN" "WireGuard interface ${WG_IFACE} state is ${state}"
+    return 1
+  fi
+  return 0
+}
+
 main() {
   mkdir -p "$(dirname "${LOG_FILE}")"
   touch "${LOG_FILE}" || true
@@ -118,6 +155,18 @@ main() {
 
   require_config
   local failed=0
+
+  # First check if WireGuard interface exists and is up
+  if ! check_wg_interface; then
+    log "WARN" "WireGuard interface check failed; restarting interface."
+    restart_wireguard || failed=1
+  fi
+
+  # Check if routes are correct
+  if ! check_wg_routes; then
+    log "WARN" "WireGuard routes check failed; restarting interface."
+    restart_wireguard || failed=1
+  fi
 
   if ! handshake_recent; then
     log "WARN" "WireGuard handshake is stale; restarting interface."

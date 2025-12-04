@@ -1,0 +1,28 @@
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!--
+  Avahi/mDNS service definition for Plex Proxy Pi
+  
+  This file enables mDNS discovery of the Plex proxy server.
+  Plex clients that use Bonjour/Avahi for discovery will find
+  the proxy automatically.
+  
+  Install to: /etc/avahi/services/plexproxy.service
+-->
+<service-group>
+  <name replace-wildcards="yes">Plex Media Server on %h</name>
+  
+  <!-- Main Plex HTTP service -->
+  <service>
+    <type>_plex._tcp</type>
+    <port>32400</port>
+    <txt-record>PlexProxy=true</txt-record>
+  </service>
+  
+  <!-- Plex companion service for remote control -->
+  <service>
+    <type>_plexcompanion._tcp</type>
+    <port>32400</port>
+  </service>
+  
+</service-group>

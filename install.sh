@@ -42,20 +42,50 @@ copy_file() {
 install_all() {
   mkdir -p "${CONFIG_DIR}"
 
+  # Main scripts
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-setup.sh" "${INSTALL_PREFIX}/plexproxy-setup" 0755
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-health.sh" "${INSTALL_PREFIX}/plexproxy-health" 0755
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-wg-tune.sh" "${INSTALL_PREFIX}/plexproxy-wg-tune" 0755
   copy_file "${SCRIPT_DIR}/scripts/plexproxy-sysctl-apply.sh" "${INSTALL_PREFIX}/plexproxy-sysctl-apply" 0755
+  copy_file "${SCRIPT_DIR}/scripts/plexproxy-keepalive.sh" "${INSTALL_PREFIX}/plexproxy-keepalive" 0755
+  
+  # GDM Discovery Relay (Python script for automatic Plex discovery)
+  copy_file "${SCRIPT_DIR}/scripts/plexproxy-gdm-relay.py" "${INSTALL_PREFIX}/plexproxy-gdm-relay" 0755
 
+  # Health check systemd units
   copy_file "${SCRIPT_DIR}/systemd/plexproxy-health.service" "${SYSTEMD_DIR}/plexproxy-health.service" 0644
   copy_file "${SCRIPT_DIR}/systemd/plexproxy-health.timer" "${SYSTEMD_DIR}/plexproxy-health.timer" 0644
 
+  # Keepalive systemd units (runs every 15 seconds to keep tunnel warm)
+  copy_file "${SCRIPT_DIR}/systemd/plexproxy-keepalive.service" "${SYSTEMD_DIR}/plexproxy-keepalive.service" 0644
+  copy_file "${SCRIPT_DIR}/systemd/plexproxy-keepalive.timer" "${SYSTEMD_DIR}/plexproxy-keepalive.timer" 0644
+  
+  # GDM Discovery Relay systemd unit
+  copy_file "${SCRIPT_DIR}/systemd/plexproxy-gdm-relay.service" "${SYSTEMD_DIR}/plexproxy-gdm-relay.service" 0644
+
+  # Sysctl tuning config
   if [[ -f "${SCRIPT_DIR}/config/90-plexproxy-tuning.conf" ]]; then
     copy_file "${SCRIPT_DIR}/config/90-plexproxy-tuning.conf" "${CONFIG_DIR}/90-plexproxy-tuning.conf" 0644
   fi
+  
+  # Avahi/mDNS service definition
+  if [[ -f "${SCRIPT_DIR}/config/plexproxy-avahi.service" ]]; then
+    copy_file "${SCRIPT_DIR}/config/plexproxy-avahi.service" "${CONFIG_DIR}/plexproxy-avahi.service" 0644
+  fi
 
   systemctl daemon-reload
-  echo "Install complete. Enable the health timer after setup with: systemctl enable --now plexproxy-health.timer"
+  
+  echo ""
+  echo "Install complete."
+  echo ""
+  echo "Next steps:"
+  echo "  1. Run: sudo plexproxy-setup"
+  echo "  2. The setup will automatically enable the health, keepalive, and discovery services"
+  echo ""
+  echo "Manual service control (if needed):"
+  echo "  - Health check (every 60s):  systemctl enable --now plexproxy-health.timer"
+  echo "  - Keepalive (every 15s):     systemctl enable --now plexproxy-keepalive.timer"
+  echo "  - GDM Discovery Relay:       systemctl enable --now plexproxy-gdm-relay.service"
 }
 
 main() {
