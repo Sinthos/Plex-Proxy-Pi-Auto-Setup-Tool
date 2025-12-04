@@ -63,7 +63,7 @@ dim() { echo -e "${DIM}$*${NC}"; }
 
 # Progress indicator
 step() {
-  ((CURRENT_STEP++))
+  (( ++CURRENT_STEP ))
   local pct=$((CURRENT_STEP * 100 / TOTAL_STEPS))
   local bar_width=30
   local filled=$((pct * bar_width / 100))
