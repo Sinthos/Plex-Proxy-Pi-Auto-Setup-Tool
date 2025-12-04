@@ -46,9 +46,10 @@ require_config() {
 }
 
 handshake_recent() {
-  local now latest
+  local now latest output
   now=$(date +%s)
-  latest=$(wg show "${WG_IFACE}" latest-handshakes 2>/dev/null | awk '{print $2}' | head -1)
+  output=$(wg show "${WG_IFACE}" latest-handshakes 2>/dev/null || true)
+  latest=$(awk '{print $2}' <<<"${output}" | head -1)
   if [[ -z "${latest}" || "${latest}" == "0" ]]; then
     return 1
   fi
@@ -102,6 +103,8 @@ restart_caddy() {
 }
 
 main() {
+  mkdir -p "$(dirname "${LOG_FILE}")"
+  touch "${LOG_FILE}" || true
   exec {LOCKFD}>"${LOCK_FILE}"
   if ! flock -n "${LOCKFD}"; then
     log "INFO" "Another health check is running; exiting."

@@ -14,19 +14,26 @@ WG_IFACE="wg0"
 MIN_MTU=1280
 MAX_MTU=1420
 STEP=10
+DO_LOG=true
 
 usage() {
   cat <<'EOF'
-Usage: plexproxy-wg-tune.sh [--detect] [--apply <mtu>] [--log]
+Usage: plexproxy-wg-tune.sh [--detect] [--apply <mtu>] [--log|--no-log]
   --detect       Run MTU discovery (DF ping sweep) and report best value
   --apply <mtu>  Write MTU into /etc/wireguard/wg0.conf (backs up first)
   --log          Append results to log (default behavior)
+  --no-log       Print to stdout only (do not append to log file)
 EOF
 }
 
 log() {
   local msg="$*"
-  echo "$(date -Iseconds) ${msg}" | tee -a "${LOG_FILE}"
+  if [[ "${DO_LOG}" == true ]]; then
+    mkdir -p "$(dirname "${LOG_FILE}")"
+    echo "$(date -Iseconds) ${msg}" | tee -a "${LOG_FILE}"
+  else
+    echo "$(date -Iseconds) ${msg}"
+  fi
 }
 
 require_root() {
@@ -59,7 +66,7 @@ detect_mtu() {
   local host="$1"
   if [[ -z "${host}" ]]; then
     log "No endpoint host available for MTU detection."
-    return 1
+    return 0
   fi
 
   log "Starting MTU detection against ${host} (range ${MIN_MTU}-${MAX_MTU}, step ${STEP})"
@@ -118,13 +125,19 @@ diagnostics() {
 }
 
 main() {
-  local do_detect=false do_apply="" do_log=true
+  local do_detect=false do_apply=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --detect) do_detect=true; shift ;;
-      --apply) do_apply="$2"; shift 2 ;;
-      --log) do_log=true; shift ;;
+      --apply)
+        if [[ -z "${2:-}" ]]; then
+          echo "Missing MTU value for --apply" >&2
+          exit 1
+        fi
+        do_apply="$2"; shift 2 ;;
+      --log) DO_LOG=true; shift ;;
+      --no-log) DO_LOG=false; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac

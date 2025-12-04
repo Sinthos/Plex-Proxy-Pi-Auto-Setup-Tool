@@ -26,7 +26,7 @@ touch "${LOG_FILE}"
 chmod 600 "${LOG_FILE}" || true
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-trap 'echo "[!] An error occurred. Check the log: ${LOG_FILE}"' ERR
+trap 'echo "[!] Error on line ${LINENO}. Check the log: ${LOG_FILE}"' ERR
 
 say() { echo -e "$*"; }
 
@@ -78,6 +78,35 @@ confirm() {
   [[ "${reply}" =~ ^[Yy]$ ]]
 }
 
+valid_ipv4() {
+  local ip="$1" IFS='.' octets
+  read -r -a octets <<< "${ip}"
+  [[ ${#octets[@]} -eq 4 ]] || return 1
+  for o in "${octets[@]}"; do
+    [[ "${o}" =~ ^[0-9]+$ ]] || return 1
+    (( o >= 0 && o <= 255 )) || return 1
+  done
+}
+
+valid_hostport() {
+  local value="$1" host port
+  if [[ "${value}" =~ ^\[(.+)\]:([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  else
+    [[ "${value}" =~ ^([^:]+):([0-9]+)$ ]] || return 1
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  fi
+  (( port >= 1 && port <= 65535 )) || return 1
+  [[ -n "${host}" ]]
+}
+
+valid_public_key() {
+  local key="$1"
+  [[ ${#key} -ge 43 && ${#key} -le 44 && "${key}" =~ ^[A-Za-z0-9+/=]+$ ]]
+}
+
 detect_lan_ip() {
   local ip
   ip=$(ip -4 addr show eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -1)
@@ -88,6 +117,61 @@ detect_lan_ip() {
     ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   fi
   echo "${ip}"
+}
+
+wifi_available() {
+  ip link show wlan0 >/dev/null 2>&1
+}
+
+validate_config_values() {
+  local errors=()
+
+  if [[ -z "${WG_ENDPOINT}" || ! valid_hostport "${WG_ENDPOINT}" ]]; then
+    errors+=("WireGuard endpoint needs the form host:port (IPv6 supported with [addr]:port).")
+  fi
+  if [[ -z "${SERVER_PUBLIC_KEY}" || ! valid_public_key "${SERVER_PUBLIC_KEY}" ]]; then
+    errors+=("WireGuard server public key does not look valid.")
+  fi
+  if [[ -z "${WG_SERVER_WG_IP}" || ! valid_ipv4 "${WG_SERVER_WG_IP}" ]]; then
+    errors+=("WireGuard server tunnel IP must be an IPv4 address.")
+  fi
+  if [[ -z "${PI_WG_IP}" || ! valid_ipv4 "${PI_WG_IP}" ]]; then
+    errors+=("Pi WireGuard IP must be an IPv4 address.")
+  fi
+  if [[ "${WG_SERVER_WG_IP}" == "${PI_WG_IP}" ]]; then
+    errors+=("Pi WireGuard IP must differ from the server tunnel IP.")
+  fi
+  if [[ -z "${PLEX_IP}" || ! valid_ipv4 "${PLEX_IP}" ]]; then
+    errors+=("Plex server IP must be an IPv4 address.")
+  fi
+  if [[ -n "${FILES_IP}" && ! valid_ipv4 "${FILES_IP}" ]]; then
+    errors+=("File/NAS IP must be empty or an IPv4 address.")
+  fi
+
+  if (( ${#errors[@]} )); then
+    say ""
+    say "Please fix the following before continuing:"
+    for err in "${errors[@]}"; do
+      say " - ${err}"
+    done
+    say ""
+    return 1
+  fi
+  return 0
+}
+
+wait_for_lan_ip() {
+  local attempts="${1:-10}" delay="${2:-3}" ip=""
+  for ((i=1; i<=attempts; i++)); do
+    ip=$(detect_lan_ip)
+    if [[ -n "${ip}" ]]; then
+      echo "${ip}"
+      return 0
+    fi
+    sleep "${delay}"
+  done
+  echo ""
+  return 1
 }
 
 load_existing_config() {
@@ -163,49 +247,61 @@ collect_config() {
   COUNTRY_CODE="${COUNTRY_CODE:-DE}"
   WIFI_SSID="${WIFI_SSID:-}"
   WIFI_PSK="${WIFI_PSK:-}"
-  WG_ENDPOINT="${WG_ENDPOINT:-}"
-  SERVER_PUBLIC_KEY="${SERVER_PUBLIC_KEY:-}"
-  WG_SERVER_WG_IP="${WG_SERVER_WG_IP:-}"
-  PI_WG_IP="${PI_WG_IP:-192.168.200.6}"
-  PLEX_IP="${PLEX_IP:-}"
-  FILES_IP="${FILES_IP:-}"
-  USE_WIFI="${USE_WIFI:-yes}"
 
-  USE_WIFI=$(read_default "Use Wi-Fi for connectivity? (yes/no)" "${USE_WIFI}")
-  if [[ "${USE_WIFI}" =~ ^([Nn]|no)$ ]]; then
-    USE_WIFI="no"
-  else
-    USE_WIFI="yes"
-  fi
+  while true; do
+    WG_ENDPOINT="${WG_ENDPOINT:-}"
+    SERVER_PUBLIC_KEY="${SERVER_PUBLIC_KEY:-}"
+    WG_SERVER_WG_IP="${WG_SERVER_WG_IP:-}"
+    PI_WG_IP="${PI_WG_IP:-192.168.200.6}"
+    PLEX_IP="${PLEX_IP:-}"
+    FILES_IP="${FILES_IP:-}"
+    USE_WIFI="${USE_WIFI:-yes}"
 
-  if [[ "${USE_WIFI}" == "yes" ]]; then
-    COUNTRY_CODE=$(read_default "Country code" "${COUNTRY_CODE}")
-    WIFI_SSID=$(read_default "Wi-Fi SSID" "${WIFI_SSID:-""}")
-    while [[ -z "${WIFI_SSID}" ]]; do
-      WIFI_SSID=$(read_default "Wi-Fi SSID (required)" "")
-    done
-    WIFI_PSK_INPUT=$(read_secret "Wi-Fi password (input hidden)")
-    WIFI_PSK="${WIFI_PSK_INPUT:-${WIFI_PSK}}"
-    while [[ -z "${WIFI_PSK}" ]]; do
-      WIFI_PSK=$(read_secret "Wi-Fi password is required, re-enter")
-    done
-  fi
+    local wifi_detected="no"
+    if wifi_available; then
+      wifi_detected="yes"
+    fi
 
-  WG_ENDPOINT=$(read_default "WireGuard server endpoint (host:port)" "${WG_ENDPOINT}")
-  SERVER_PUBLIC_KEY=$(read_default "WireGuard server public key" "${SERVER_PUBLIC_KEY}")
-  WG_SERVER_WG_IP=$(read_default "WireGuard server tunnel IP" "${WG_SERVER_WG_IP:-192.168.200.1}")
-  PI_WG_IP=$(read_default "Desired WireGuard IP for this Pi" "${PI_WG_IP}")
-  PLEX_IP=$(read_default "Plex server IP in home LAN" "${PLEX_IP:-192.168.10.102}")
-  FILES_IP=$(read_default "File server/NAS IP (optional, leave blank if none)" "${FILES_IP:-}")
+    if [[ "${wifi_detected}" == "yes" ]]; then
+      USE_WIFI=$(read_default "Use Wi-Fi for connectivity? (yes/no)" "${USE_WIFI}")
+      if [[ "${USE_WIFI}" =~ ^([Nn]|no)$ ]]; then
+        USE_WIFI="no"
+      else
+        USE_WIFI="yes"
+      fi
+    else
+      say "Wi-Fi interface wlan0 not detected; using wired mode."
+      USE_WIFI="no"
+    fi
 
-  WG_ALLOWED_IPS="${WG_SERVER_WG_IP}/32"
-  [[ -n "${FILES_IP}" ]] && WG_ALLOWED_IPS+=",${FILES_IP}/32"
-  [[ -n "${PLEX_IP}" ]] && WG_ALLOWED_IPS+=",${PLEX_IP}/32"
-  WG_ALLOWED_IPS="${WG_ALLOWED_IPS//[[:space:]]/}"
+    if [[ "${USE_WIFI}" == "yes" ]]; then
+      COUNTRY_CODE=$(read_default "Country code" "${COUNTRY_CODE}")
+      WIFI_SSID=$(read_default "Wi-Fi SSID" "${WIFI_SSID:-""}")
+      while [[ -z "${WIFI_SSID}" ]]; do
+        WIFI_SSID=$(read_default "Wi-Fi SSID (required)" "")
+      done
+      WIFI_PSK_INPUT=$(read_secret "Wi-Fi password (input hidden)")
+      WIFI_PSK="${WIFI_PSK_INPUT:-${WIFI_PSK}}"
+      while [[ -z "${WIFI_PSK}" ]]; do
+        WIFI_PSK=$(read_secret "Wi-Fi password is required, re-enter")
+      done
+    fi
 
-  say ""
-  say "Configuration summary:"
-  cat <<EOF
+    WG_ENDPOINT=$(read_default "WireGuard server endpoint (host:port)" "${WG_ENDPOINT}")
+    SERVER_PUBLIC_KEY=$(read_default "WireGuard server public key" "${SERVER_PUBLIC_KEY}")
+    WG_SERVER_WG_IP=$(read_default "WireGuard server tunnel IP" "${WG_SERVER_WG_IP:-192.168.200.1}")
+    PI_WG_IP=$(read_default "Desired WireGuard IP for this Pi" "${PI_WG_IP}")
+    PLEX_IP=$(read_default "Plex server IP in home LAN" "${PLEX_IP:-192.168.10.102}")
+    FILES_IP=$(read_default "File server/NAS IP (optional, leave blank if none)" "${FILES_IP:-}")
+
+    WG_ALLOWED_IPS="${WG_SERVER_WG_IP}/32"
+    [[ -n "${FILES_IP}" ]] && WG_ALLOWED_IPS+=",${FILES_IP}/32"
+    [[ -n "${PLEX_IP}" ]] && WG_ALLOWED_IPS+=",${PLEX_IP}/32"
+    WG_ALLOWED_IPS="${WG_ALLOWED_IPS//[[:space:]]/}"
+
+    say ""
+    say "Configuration summary:"
+    cat <<EOF
 Country:            ${COUNTRY_CODE}
 Wi-Fi SSID:         ${WIFI_SSID}
 WireGuard endpoint: ${WG_ENDPOINT}
@@ -218,10 +314,17 @@ File/NAS IP:        ${FILES_IP:-<none>}
 Use Wi-Fi:          ${USE_WIFI}
 EOF
 
-  if ! confirm "Proceed with these settings?"; then
-    say "Aborted by user."
-    exit 1
-  fi
+    if ! validate_config_values; then
+      continue
+    fi
+
+    if confirm "Proceed with these settings?"; then
+      break
+    else
+      say "Aborted by user."
+      exit 1
+    fi
+  done
 }
 
 write_config_file() {
@@ -254,6 +357,10 @@ configure_wifi() {
   say ""
   say "=== Configuring Wi-Fi ==="
   backup_file "${WPA_CONF}"
+  local hashed_psk=""
+  if command -v wpa_passphrase >/dev/null 2>&1; then
+    hashed_psk=$(wpa_passphrase "${WIFI_SSID}" "${WIFI_PSK}" | awk -F= '/^\s*psk=/{print $2}' | tail -1)
+  fi
   cat > "${WPA_CONF}" <<EOF
 country=${COUNTRY_CODE}
 ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
@@ -261,7 +368,7 @@ update_config=1
 
 network={
     ssid="${WIFI_SSID}"
-    psk="${WIFI_PSK}"
+    psk=${hashed_psk:-"${WIFI_PSK}"}
 }
 EOF
   chmod 600 "${WPA_CONF}"
@@ -270,9 +377,12 @@ EOF
   else
     systemctl restart wpa_supplicant || true
   fi
-  sleep 3
-  PI_LAN_IP=$(detect_lan_ip)
-  say "Detected Pi LAN IP: ${PI_LAN_IP:-unknown}"
+  PI_LAN_IP=$(wait_for_lan_ip 10 3)
+  if [[ -n "${PI_LAN_IP}" ]]; then
+    say "Detected Pi LAN IP: ${PI_LAN_IP}"
+  else
+    say "WARNING: Could not detect a LAN IP after configuring Wi-Fi."
+  fi
 }
 
 update_system() {
@@ -469,7 +579,7 @@ configure_watchdog() {
   local watchdog_interface="eth0"
   local watchdog_timeout=120   # seconds before hardware reboot (keeps this lenient: >1 minute)
   local watchdog_interval=15   # seconds between checks/kicks
-  if [[ "${USE_WIFI}" == "yes" ]]; then
+  if [[ "${USE_WIFI}" == "yes" ]] && wifi_available; then
     watchdog_interface="wlan0"
   fi
 
@@ -503,6 +613,7 @@ EOF
 enable_health_timer() {
   say ""
   say "=== Enabling health check timer ==="
+  systemctl daemon-reload
   if systemctl list-unit-files | grep -q "^${HEALTH_TIMER}"; then
     systemctl enable --now "${HEALTH_TIMER}"
     say "Health check enabled (runs every minute)"
@@ -545,7 +656,6 @@ main() {
   update_system
   install_packages
   configure_wifi
-  configure_watchdog
   ensure_wireguard_keys
   write_wg_conf
   print_server_snippet
@@ -554,6 +664,7 @@ main() {
   configure_caddy
   apply_sysctl_tuning
   enable_health_timer
+  configure_watchdog
   final_summary
 }
 
