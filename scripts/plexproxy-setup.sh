@@ -124,14 +124,26 @@ maybe_import_wg_conf() {
   parse_imported_wg_conf "${tmp}"
 }
 
+extract_wg_value() {
+  local key="$1" file="$2" strip_all="${3:-false}" line value
+  line=$(grep -m1 -E "^${key}[[:space:]]*=" "${file}" || true)
+  [[ -z "${line}" ]] && return
+  value=$(printf '%s\n' "${line}" | sed -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*//; s/[[:space:]]+$//")
+  value="${value//$'\r'/}"
+  if [[ "${strip_all}" == "true" ]]; then
+    value="${value//[[:space:]]/}"
+  fi
+  echo "${value}"
+}
+
 parse_imported_wg_conf() {
   local file="$1"
   local addr endpoint pubkey privkey allowed
-  addr=$(grep -m1 -E '^Address' "${file}" | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}')
-  endpoint=$(grep -m1 -E '^Endpoint' "${file}" | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}')
-  pubkey=$(grep -m1 -E '^PublicKey' "${file}" | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}')
-  privkey=$(grep -m1 -E '^PrivateKey' "${file}" | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}')
-  allowed=$(grep -m1 -E '^AllowedIPs' "${file}" | awk -F= '{gsub(/[[:space:]]/,"",$2); print $2}')
+  addr=$(extract_wg_value "Address" "${file}" "true")
+  endpoint=$(extract_wg_value "Endpoint" "${file}" "true")
+  pubkey=$(extract_wg_value "PublicKey" "${file}" "true")
+  privkey=$(extract_wg_value "PrivateKey" "${file}" "true")
+  allowed=$(extract_wg_value "AllowedIPs" "${file}" "true")
 
   [[ -n "${addr:-}" ]] && PI_WG_IP="${addr%/*}"
   [[ -n "${endpoint:-}" ]] && WG_ENDPOINT="${endpoint}"

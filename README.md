@@ -28,8 +28,8 @@ Transforms a Raspberry Pi OS Lite (64-bit) install into a WireGuard-connected Pl
 ## Quick start
 ```bash
 sudo apt update && sudo apt install -y git
-git clone https://github.com/<you>/plex-proxy-pi.git
-cd plex-proxy-pi
+git clone https://github.com/Sinthos/Plex-Proxy-Pi-Auto-Setup-Tool
+cd Plex-Proxy-Pi-Auto-Setup-Tool
 sudo ./install.sh            # copies scripts + systemd units
 sudo plexproxy-setup         # guided setup + logging to /var/log/plexproxy-setup.log
 ```
