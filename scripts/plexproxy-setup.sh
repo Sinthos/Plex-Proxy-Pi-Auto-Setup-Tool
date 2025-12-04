@@ -420,11 +420,13 @@ ensure_wireguard_keys() {
   mkdir -p "${WG_DIR}"
   chmod 700 "${WG_DIR}"
   local regenerate=false
+  local private_key_changed=false
 
   if [[ -n "${IMPORTED_PRIVATE_KEY:-}" ]]; then
     say "Using private key from imported wg0.conf"
     echo "${IMPORTED_PRIVATE_KEY}" > "${WG_PRIVATE_KEY_FILE}"
     chmod 600 "${WG_PRIVATE_KEY_FILE}"
+    private_key_changed=true
   fi
 
   if [[ -f "${WG_PRIVATE_KEY_FILE}" ]]; then
@@ -438,9 +440,12 @@ ensure_wireguard_keys() {
 
   if [[ "${regenerate}" == true ]]; then
     umask 077
-    wg genkey | tee "${WG_PRIVATE_KEY_FILE}" | wg pubkey > "${WG_PUBLIC_KEY_FILE}"
+    wg genkey > "${WG_PRIVATE_KEY_FILE}"
     umask 022
-  elif [[ ! -f "${WG_PUBLIC_KEY_FILE}" ]]; then
+    private_key_changed=true
+  fi
+
+  if [[ "${private_key_changed}" == true || ! -f "${WG_PUBLIC_KEY_FILE}" ]]; then
     wg pubkey < "${WG_PRIVATE_KEY_FILE}" > "${WG_PUBLIC_KEY_FILE}"
   fi
 
