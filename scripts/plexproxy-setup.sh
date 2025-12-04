@@ -530,29 +530,19 @@ configure_caddy() {
   say "=== Configuring Caddy reverse proxy ==="
   backup_file "${CADDYFILE}"
   mkdir -p /var/log/caddy
+  chown caddy:caddy /var/log/caddy || true
   cat > "${CADDYFILE}" <<EOF
 :32400 {
-    # Keep upstream connections warm and allow mild buffering to ride out jitter
-    reverse_proxy ${PLEX_IP}:32400 {
-        flush_interval 250ms
-        transport http {
-            versions h1 h2c
-            keepalive 30
-            keepalive_idle_conns 16
-            keepalive_timeout 300s
-            read_buffer 32kb
-            write_buffer 32kb
-            dial_timeout 10s
-            response_header_timeout 20s
-        }
-    }
+  reverse_proxy ${PLEX_IP}:32400 {
+    flush_interval 250ms
+  }
 
-    log {
-        output file /var/log/caddy/plexproxy-access.log {
-            roll_size 10MiB
-            roll_keep 5
-        }
+  log {
+    output file /var/log/caddy/plexproxy-access.log {
+      roll_size 10MiB
+      roll_keep 5
     }
+  }
 }
 EOF
   systemctl enable caddy
