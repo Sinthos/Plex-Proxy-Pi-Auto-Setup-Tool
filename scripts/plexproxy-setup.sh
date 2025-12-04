@@ -662,24 +662,16 @@ configure_caddy() {
 :32400 {
   reverse_proxy ${PLEX_IP}:32400 {
     flush_interval 250ms
-    # Keep the upstream warm and fail fast if Plex is not reachable
-    health_checks {
-      active {
-        path /identity
-        interval 15s
-        timeout 5s
-      }
-      passive {
-        unhealthy_status 502 503 504
-        max_fails 2
-        fail_duration 1m
-      }
-    }
-    transport http {
-      keepalive 30s
-      keepalive_idle_conns 10
-      keepalive_timeout 60s
-    }
+    
+    # Active health checking (compatible with Caddy 2.6.x)
+    health_uri /identity
+    health_interval 15s
+    health_timeout 5s
+    
+    # Passive health checking
+    fail_duration 30s
+    max_fails 3
+    unhealthy_status 502 503 504
   }
 
   log {
