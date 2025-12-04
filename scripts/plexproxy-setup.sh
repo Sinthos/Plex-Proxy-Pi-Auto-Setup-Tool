@@ -464,6 +464,15 @@ configure_watchdog() {
   say ""
   say "=== Configuring hardware watchdog ==="
 
+  # Only monitor the active uplink to avoid reboots when an unused interface (e.g., eth0 without a cable)
+  # stays down. Wi-Fi deployments watch wlan0; wired deployments watch eth0.
+  local watchdog_interface="eth0"
+  local watchdog_timeout=120   # seconds before hardware reboot (keeps this lenient: >1 minute)
+  local watchdog_interval=15   # seconds between checks/kicks
+  if [[ "${USE_WIFI}" == "yes" ]]; then
+    watchdog_interface="wlan0"
+  fi
+
   # Ensure driver loads on boot (Pi hardware watchdog)
   install -m 0644 -D /dev/null /etc/modules-load.d/plexproxy-watchdog.conf
   if ! grep -q "^bcm2835_wdt" /etc/modules-load.d/plexproxy-watchdog.conf; then
@@ -474,18 +483,17 @@ configure_watchdog() {
 
   local watchdog_conf="/etc/watchdog.conf"
   backup_file "${watchdog_conf}"
-  cat > "${watchdog_conf}" <<'EOF'
+  cat > "${watchdog_conf}" <<EOF
 # Plex Proxy Pi watchdog configuration
 watchdog-device = /dev/watchdog
-watchdog-timeout = 15
-interval = 5
+watchdog-timeout = ${watchdog_timeout}
+interval = ${watchdog_interval}
 max-load-1 = 24
 # Network reachability tests (any success is enough)
 ping = 1.1.1.1
 ping = 8.8.8.8
-# Interface checks; adjust depending on deployment
-interface = eth0
-interface = wlan0
+# Interface check; monitor the primary uplink only
+interface = ${watchdog_interface}
 EOF
 
   systemctl enable --now watchdog
