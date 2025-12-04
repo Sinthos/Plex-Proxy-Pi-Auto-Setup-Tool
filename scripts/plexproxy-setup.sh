@@ -547,10 +547,12 @@ configure_caddy() {
 EOF
   systemctl enable caddy
   systemctl restart caddy
-  if curl -fsS --max-time 5 http://localhost:32400 >/dev/null; then
-    say "Caddy reverse proxy responded successfully on localhost:32400"
+  local http_code
+  http_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:32400 || true)
+  if [[ "${http_code}" != "000" && -n "${http_code}" ]]; then
+    say "Caddy reverse proxy responded on localhost:32400 (HTTP ${http_code}; Plex often returns 401 without a token)"
   else
-    say "WARNING: Caddy reverse proxy test failed. Verify Plex is reachable through the tunnel."
+    say "WARNING: Caddy reverse proxy test failed to connect. Verify Plex is reachable through the tunnel."
   fi
 }
 
