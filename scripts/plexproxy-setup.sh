@@ -126,24 +126,40 @@ wifi_available() {
 validate_config_values() {
   local errors=()
 
-  if [[ -z "${WG_ENDPOINT}" ]] || ! valid_hostport "${WG_ENDPOINT}"; then
+  if [[ -z "${WG_ENDPOINT}" ]]; then
+    errors+=("WireGuard endpoint needs the form host:port (IPv6 supported with [addr]:port).")
+  elif ! valid_hostport "${WG_ENDPOINT}"; then
     errors+=("WireGuard endpoint needs the form host:port (IPv6 supported with [addr]:port).")
   fi
-  if [[ -z "${SERVER_PUBLIC_KEY}" ]] || ! valid_public_key "${SERVER_PUBLIC_KEY}"; then
+
+  if [[ -z "${SERVER_PUBLIC_KEY}" ]]; then
+    errors+=("WireGuard server public key does not look valid.")
+  elif ! valid_public_key "${SERVER_PUBLIC_KEY}"; then
     errors+=("WireGuard server public key does not look valid.")
   fi
-  if [[ -z "${WG_SERVER_WG_IP}" ]] || ! valid_ipv4 "${WG_SERVER_WG_IP}"; then
+
+  if [[ -z "${WG_SERVER_WG_IP}" ]]; then
+    errors+=("WireGuard server tunnel IP must be an IPv4 address.")
+  elif ! valid_ipv4 "${WG_SERVER_WG_IP}"; then
     errors+=("WireGuard server tunnel IP must be an IPv4 address.")
   fi
-  if [[ -z "${PI_WG_IP}" ]] || ! valid_ipv4 "${PI_WG_IP}"; then
+
+  if [[ -z "${PI_WG_IP}" ]]; then
+    errors+=("Pi WireGuard IP must be an IPv4 address.")
+  elif ! valid_ipv4 "${PI_WG_IP}"; then
     errors+=("Pi WireGuard IP must be an IPv4 address.")
   fi
+
   if [[ "${WG_SERVER_WG_IP}" == "${PI_WG_IP}" ]]; then
     errors+=("Pi WireGuard IP must differ from the server tunnel IP.")
   fi
-  if [[ -z "${PLEX_IP}" ]] || ! valid_ipv4 "${PLEX_IP}"; then
+
+  if [[ -z "${PLEX_IP}" ]]; then
+    errors+=("Plex server IP must be an IPv4 address.")
+  elif ! valid_ipv4 "${PLEX_IP}"; then
     errors+=("Plex server IP must be an IPv4 address.")
   fi
+
   if [[ -n "${FILES_IP}" && ! valid_ipv4 "${FILES_IP}" ]]; then
     errors+=("File/NAS IP must be empty or an IPv4 address.")
   fi
