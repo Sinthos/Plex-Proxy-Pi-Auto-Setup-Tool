@@ -68,6 +68,11 @@ check_http() {
   curl -fsS --max-time 5 http://localhost:32400/identity >/dev/null 2>&1
 }
 
+# Keep the upstream Plex session warm over wg0 to avoid idle timeouts
+check_upstream_identity() {
+  curl -fsS --interface "${WG_IFACE}" --max-time 5 "http://${PLEX_IP}:32400/identity" >/dev/null 2>&1
+}
+
 can_restart() {
   local now last=0
   now=$(date +%s)
@@ -126,6 +131,11 @@ main() {
 
   if [[ -n "${FILES_IP:-}" ]] && ! ping_target "${FILES_IP}"; then
     log "WARN" "Failed to reach file server ${FILES_IP}; restarting WireGuard."
+    restart_wireguard || failed=1
+  fi
+
+  if ! check_upstream_identity; then
+    log "WARN" "Upstream Plex identity check via ${WG_IFACE} failed; restarting WireGuard."
     restart_wireguard || failed=1
   fi
 
