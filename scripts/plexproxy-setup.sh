@@ -160,8 +160,10 @@ validate_config_values() {
     errors+=("Plex server IP must be an IPv4 address.")
   fi
 
-  if [[ -n "${FILES_IP}" && ! valid_ipv4 "${FILES_IP}" ]]; then
-    errors+=("File/NAS IP must be empty or an IPv4 address.")
+  if [[ -n "${FILES_IP}" ]]; then
+    if ! valid_ipv4 "${FILES_IP}"; then
+      errors+=("File/NAS IP must be empty or an IPv4 address.")
+    fi
   fi
 
   if (( ${#errors[@]} )); then
